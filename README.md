@@ -1,3 +1,6 @@
+
+
+
 CoAP-Based Air Quality Monitoring and Random Forest Classification System
 An end-to-end IoT and Machine Learning pipeline for real-time air quality monitoring in Kochi, India. The system fetches live pollutant metrics via the Open-Meteo REST API, serves them over the Constrained Application Protocol (CoAP / UDP), receives them via a CoAP client, classifies the AQI category using a Random Forest model trained on historical Indian air quality data (city_day.csv), and renders an interactive Streamlit dashboard.
 1. System Architecture
@@ -407,3 +410,467 @@ streamlit run dashboard.py
 | 4. Parameter Dashboard | dashboard.py (Streamlit metrics) | Displays live cards for PM2.5, PM10, NO2, SO2, and O3. |
 | 5. Random Forest Training | train_model.py using city_day.csv | Pipeline using SimpleImputer + RandomForestClassifier targeting AQI_Bucket. |
 | 6. Predicted Classification Display | dashboard.py prediction box | Renders color-coded classification badge and confidence breakdown table. |
+
+
+
+
+CoAP-Based Weather Monitoring and Decision Tree Classification System
+An end-to-end IoT and Machine Learning solution for Kochi, India. The system fetches live meteorological data from Open-Meteo, transmits it over the Constrained Application Protocol (CoAP / UDP), receives it via a CoAP client, and classifies real-time weather into Clear, Cloudy, Drizzle, or Rain using a Decision Tree model trained on Open-Meteo historical archive data.
+1. System Architecture & Information Flow
++------------------------------------+
+|   Open-Meteo Live Forecast API     |
+|     (Kochi: 9.93°N, 76.27°E)       |
++------------------------------------+
+                  │ HTTP REST GET
+                  ▼
++------------------------------------+
+|            CoAP Server             |
+|       (aiocoap / Port 5683)        |
+|        Resource: /weather          |
++------------------------------------+
+                  │ CoAP GET (UDP, RFC 7252)
+                  ▼
++------------------------------------+
+|            CoAP Client             |
+|          (aiocoap client)          |
++------------------------------------+
+                  │ Decoded Weather Payload
+                  ▼
++------------------------------------+          +----------------------------------+
+|        Streamlit Dashboard         | ───────> |     Decision Tree Classifier     |
+|   (Displays 6 Weather Metrics)     | <─────── | (Trained on Open-Meteo Archive)  |
++------------------------------------+          | Target: Clear, Cloudy, etc.      |
+                                                +----------------------------------+
+
+2. Project Directory Structure
+Create a root directory named coap_weather_system/ and place the files inside it:
+coap_weather_system/
+│
+├── requirements.txt         # Project dependencies
+├── train_model.py           # Downloads historical data, trains Decision Tree, saves .pkl
+├── coap_server.py           # CoAP server fetching live Kochi weather from Open-Meteo
+├── coap_client.py           # CoAP client requesting data over CoAP GET
+└── dashboard.py             # Streamlit web dashboard + live classification inference
+
+3. Environment Setup & Dependencies
+Step 3.1: Verify Python
+Ensure Python 3.9+ is installed:
+python --version
+
+(Optional) Create and activate a virtual environment:
+# Linux/macOS
+python3 -m venv venv
+source venv/bin/activate
+
+# Windows
+python -m venv venv
+venv\Scripts\activate
+
+Step 3.2: Create requirements.txt
+Save the following as requirements.txt:
+aiocoap==0.4.7
+requests>=2.28.0
+pandas>=1.5.0
+numpy>=1.23.0
+scikit-learn>=1.2.0
+joblib>=1.2.0
+streamlit>=1.28.0
+
+Install the dependencies:
+pip install -r requirements.txt
+
+4. Source Code Files
+File 1: train_model.py
+This script downloads historical weather data (2023-01-01 to 2025-12-31) for Kochi directly from the Open-Meteo Archive API, maps the weather_code values to the requested classes (Clear, Cloudy, Drizzle, Rain), trains a DecisionTreeClassifier, and exports dt_weather_model.pkl.
+"""
+train_model.py
+Downloads historical weather data for Kochi from the Open-Meteo Archive API,
+maps weather_code to weather_class, trains a Decision Tree Classifier,
+and exports dt_weather_model.pkl.
+"""
+
+import urllib.request
+import json
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import classification_report, accuracy_score
+import joblib
+
+HISTORICAL_API_URL = (
+    "https://archive-api.open-meteo.com/v1/archive?"
+    "latitude=9.93&longitude=76.27&start_date=2023-01-01&end_date=2025-12-31&"
+    "hourly=temperature_2m,relative_humidity_2m,precipitation,cloud_cover,wind_speed_10m,surface_pressure,weather_code"
+)
+
+# Weather code mapping table
+WEATHER_CODE_MAP = {
+    0: "Clear",
+    1: "Clear",
+    2: "Cloudy",
+    3: "Cloudy",
+    51: "Drizzle",
+    53: "Drizzle",
+    55: "Drizzle",
+    61: "Rain",
+    63: "Rain",
+    65: "Rain"
+}
+
+def train_and_export():
+    print("[1/5] Fetching historical weather dataset from Open-Meteo Archive API...")
+    req = urllib.request.Request(HISTORICAL_API_URL, headers={'User-Agent': 'WeatherTrainer/1.0'})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw_json = json.loads(resp.read().decode('utf-8'))
+
+    hourly = raw_json.get("hourly", {})
+    df = pd.DataFrame({
+        "temperature": hourly.get("temperature_2m"),
+        "humidity": hourly.get("relative_humidity_2m"),
+        "precipitation": hourly.get("precipitation"),
+        "cloud_cover": hourly.get("cloud_cover"),
+        "wind_speed": hourly.get("wind_speed_10m"),
+        "surface_pressure": hourly.get("surface_pressure"),
+        "weather_code": hourly.get("weather_code")
+    })
+
+    print(f"Total historical observations retrieved: {len(df)}")
+    df.to_csv("historical_weather.csv", index=False)
+    print("Saved cached dataset to 'historical_weather.csv'.")
+
+    # Map weather_code to weather_class
+    print("[2/5] Mapping weather_code to classes (Clear, Cloudy, Drizzle, Rain)...")
+    df['weather_class'] = df['weather_code'].map(WEATHER_CODE_MAP)
+
+    features = ['temperature', 'humidity', 'precipitation', 'cloud_cover', 'wind_speed', 'surface_pressure']
+    target = 'weather_class'
+
+    # Filter records to only mapped classes and valid feature inputs
+    df = df.dropna(subset=[target] + features)
+    print(f"Dataset size after label mapping: {len(df)}")
+    print(f"Class distribution:\n{df[target].value_counts()}\n")
+
+    X = df[features]
+    y = df[target]
+
+    # Split into train and test sets
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+
+    # Decision Tree Pipeline with median imputation
+    pipeline = Pipeline([
+        ('imputer', SimpleImputer(strategy='median')),
+        ('dt', DecisionTreeClassifier(
+            criterion='gini',
+            max_depth=8,
+            min_samples_split=6,
+            min_samples_leaf=3,
+            random_state=42
+        ))
+    ])
+
+    print("[3/5] Training Decision Tree Classifier...")
+    pipeline.fit(X_train, y_train)
+
+    print("[4/5] Evaluating model performance...")
+    y_pred = pipeline.predict(X_test)
+    accuracy = accuracy_score(y_test, y_pred)
+    print(f"Test Accuracy: {accuracy * 100:.2f}%\n")
+    print("Classification Report:")
+    print(classification_report(y_test, y_pred))
+
+    model_filename = "dt_weather_model.pkl"
+    print(f"[5/5] Saving trained model to '{model_filename}'...")
+    joblib.dump(pipeline, model_filename)
+    print("Model training successfully completed.")
+
+if __name__ == "__main__":
+    train_and_export()
+
+File 2: coap_server.py
+Runs a CoAP server on UDP port 5683. When a CoAP client sends a GET request to /weather, the server fetches live data for Kochi from the Open-Meteo Forecast API and responds with a 2.05 CONTENT JSON payload.
+"""
+coap_server.py
+CoAP Server providing live Kochi weather parameters on resource /weather.
+"""
+
+import asyncio
+import json
+import urllib.request
+import aiocoap
+import aiocoap.resource as resource
+
+LIVE_WEATHER_API = (
+    "https://api.open-meteo.com/v1/forecast?"
+    "latitude=9.93&longitude=76.27&current=temperature_2m,relative_humidity_2m,"
+    "precipitation,cloud_cover,wind_speed_10m,surface_pressure"
+)
+
+class WeatherResource(resource.Resource):
+    """Resource returning live weather metrics for Kochi."""
+
+    async def render_get(self, request):
+        client_info = request.remote.hostinfo if request.remote else "unknown"
+        print(f"[CoAP Server] Received GET request from {client_info}")
+
+        try:
+            req = urllib.request.Request(
+                LIVE_WEATHER_API,
+                headers={'User-Agent': 'KochiWeatherCoAPServer/1.0'}
+            )
+            with urllib.request.urlopen(req, timeout=5) as response:
+                api_response = json.loads(response.read().decode('utf-8'))
+
+            current = api_response.get("current", {})
+
+            # Prepare structured weather parameters
+            payload_data = {
+                "city": "Kochi",
+                "latitude": 9.93,
+                "longitude": 76.27,
+                "timestamp": current.get("time"),
+                "temperature": current.get("temperature_2m"),
+                "humidity": current.get("relative_humidity_2m"),
+                "precipitation": current.get("precipitation"),
+                "cloud_cover": current.get("cloud_cover"),
+                "wind_speed": current.get("wind_speed_10m"),
+                "surface_pressure": current.get("surface_pressure")
+            }
+
+            payload_bytes = json.dumps(payload_data).encode('utf-8')
+            print(f"[CoAP Server] Sending response: {payload_data}")
+            return aiocoap.Message(payload=payload_bytes, code=aiocoap.numbers.codes.Code.CONTENT)
+
+        except Exception as err:
+            err_msg = json.dumps({"error": str(err)}).encode('utf-8')
+            print(f"[CoAP Server Error] {err}")
+            return aiocoap.Message(payload=err_msg, code=aiocoap.numbers.codes.Code.INTERNAL_SERVER_ERROR)
+
+async def main():
+    root = resource.Site()
+    root.add_resource(['weather'], WeatherResource())
+
+    # Bind CoAP server to standard UDP port 5683
+    await aiocoap.Context.create_server_context(root, bind=('127.0.0.1', 5683))
+    print("[CoAP Server] Server is running at coap://127.0.0.1:5683/weather")
+    await asyncio.get_running_loop().create_future()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+File 3: coap_client.py
+A client module that queries the CoAP server using a standard CoAP GET request and returns parsed JSON.
+"""
+coap_client.py
+Asynchronous client sending CoAP GET requests to retrieve weather parameters.
+"""
+
+import asyncio
+import json
+from aiocoap import Message, GET, Context
+
+async def request_weather_coap(server_uri="coap://127.0.0.1:5683/weather"):
+    """Sends a CoAP GET request and returns decoded weather metrics."""
+    context = await Context.create_client_context()
+    request = Message(code=GET, uri=server_uri)
+
+    try:
+        response = await context.request(request).response
+        payload_text = response.payload.decode('utf-8')
+        return json.loads(payload_text)
+    finally:
+        await context.shutdown()
+
+if __name__ == "__main__":
+    print("[CoAP Client] Querying coap://127.0.0.1:5683/weather ...")
+    try:
+        data = asyncio.run(request_weather_coap())
+        print("[CoAP Client] Received Response:")
+        print(json.dumps(data, indent=2))
+    except Exception as exc:
+        print(f"[CoAP Client Error] Could not connect to CoAP Server: {exc}")
+
+File 4: dashboard.py
+Streamlit application that triggers the CoAP client, renders all 6 live weather parameters in metrics cards, loads dt_weather_model.pkl, and classifies the conditions into Clear, Cloudy, Drizzle, or Rain.
+"""
+dashboard.py
+Streamlit Dashboard for Kochi Weather Monitoring & Decision Tree Classification.
+"""
+
+import streamlit as st
+import pandas as pd
+import asyncio
+import joblib
+import os
+from coap_client import request_weather_coap
+
+st.set_page_config(
+    page_title="Kochi Weather Monitoring",
+    page_icon="⛅",
+    layout="wide"
+)
+
+# Styling and iconography for the 4 weather classes
+WEATHER_STYLE = {
+    "Clear": {"color": "#f39c12", "icon": "☀️", "desc": "Clear Skies / Minimal Clouds"},
+    "Cloudy": {"color": "#7f8c8d", "icon": "☁️", "desc": "Partly to Heavily Overcast"},
+    "Drizzle": {"color": "#3498db", "icon": "🌦️", "desc": "Light Precipitation / Drizzle"},
+    "Rain": {"color": "#2980b9", "icon": "🌧️", "desc": "Moderate to Heavy Rainfall"}
+}
+
+@st.cache_resource
+def load_model(path="dt_weather_model.pkl"):
+    if os.path.exists(path):
+        return joblib.load(path)
+    return None
+
+model = load_model()
+
+st.title("⛅ CoAP-Based Weather Monitoring & Classification")
+st.subheader("Target Location: Kochi (Lat: 9.93°N, Lon: 76.27°E)")
+st.caption("Architecture: Open-Meteo Forecast API ➔ CoAP Server ➔ CoAP Client ➔ Streamlit Dashboard ➔ Decision Tree")
+
+if model is None:
+    st.error("⚠️ Model file 'dt_weather_model.pkl' not found. Please execute 'python train_model.py' first.")
+    st.stop()
+
+col_poll, _ = st.columns([1, 4])
+with col_poll:
+    refresh_button = st.button("📡 Poll CoAP Server", use_container_width=True)
+
+# Fetch CoAP data
+data = None
+try:
+    with st.spinner("Fetching data over CoAP GET (UDP Port 5683)..."):
+        data = asyncio.run(request_weather_coap())
+except Exception as error:
+    st.error(f"CoAP Client Communication Failure: Ensure `coap_server.py` is running. Details: {error}")
+    st.stop()
+
+if data and "error" not in data:
+    st.success(f"CoAP Data Received (2.05 Content) | Timestamp: {data.get('timestamp')}")
+    st.divider()
+
+    # 1. Display 6 Weather Metrics
+    st.markdown("### 📊 Live Weather Parameters (Kochi)")
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric(label="Temperature", value=f"{data.get('temperature', 0.0):.1f} °C")
+    c2.metric(label="Relative Humidity", value=f"{data.get('humidity', 0.0):.0f} %")
+    c3.metric(label="Precipitation", value=f"{data.get('precipitation', 0.0):.2f} mm")
+    c4.metric(label="Cloud Cover", value=f"{data.get('cloud_cover', 0.0):.0f} %")
+    c5.metric(label="Wind Speed", value=f"{data.get('wind_speed', 0.0):.1f} km/h")
+    c6.metric(label="Surface Pressure", value=f"{data.get('surface_pressure', 0.0):.1f} hPa")
+
+    # 2. Build DataFrame with exact feature names used in training
+    feature_df = pd.DataFrame([{
+        'temperature': data.get('temperature'),
+        'humidity': data.get('humidity'),
+        'precipitation': data.get('precipitation'),
+        'cloud_cover': data.get('cloud_cover'),
+        'wind_speed': data.get('wind_speed'),
+        'surface_pressure': data.get('surface_pressure')
+    }])
+
+    # 3. Predict Weather Category
+    prediction = model.predict(feature_df)[0]
+    style_info = WEATHER_STYLE.get(prediction, {"color": "#34495e", "icon": "🌡️", "desc": ""})
+
+    st.divider()
+    st.markdown("### 🏷️ Decision Tree Weather Classification")
+
+    pred_col, conf_col = st.columns([1, 1])
+
+    with pred_col:
+        st.markdown(
+            f"""
+            <div style="background-color: {style_info['color']}; padding: 30px; border-radius: 12px; text-align: center; color: white;">
+                <div style="font-size: 3rem; margin-bottom: 5px;">{style_info['icon']}</div>
+                <h3 style="margin: 0; font-size: 1.2rem; font-weight: normal;">Predicted Weather Condition</h3>
+                <h1 style="margin: 10px 0 5px 0; font-size: 2.8rem; font-weight: bold;">{prediction}</h1>
+                <p style="margin: 0; font-size: 1rem; opacity: 0.9;">{style_info['desc']}</p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    with conf_col:
+        if hasattr(model.named_steps['dt'], "predict_proba"):
+            classes = model.named_steps['dt'].classes_
+            probs = model.predict_proba(feature_df)[0]
+            prob_df = pd.DataFrame({
+                "Weather Class": classes,
+                "Probability": probs
+            }).sort_values(by="Probability", ascending=False)
+
+            st.write("**Model Classification Probabilities:**")
+            st.dataframe(prob_df.style.format({"Probability": "{:.2%}"}), use_container_width=True)
+else:
+    st.error(f"Received error from CoAP Server: {data.get('error') if data else 'Empty response'}")
+
+5. Execution Order & Step-by-Step Instructions
+Execute the system using three separate terminal windows in the following sequence:
+[Terminal 1] ➔ Run train_model.py (One-time) ➔ Run coap_server.py
+[Terminal 2] ➔ Run coap_client.py (Verification check)
+[Terminal 3] ➔ Run streamlit run dashboard.py
+
+Step 5.1: Terminal 1 — Train the Decision Tree Model
+In your project directory, run:
+python train_model.py
+
+ * What happens:
+   * Queries the Open-Meteo Historical Archive API (2023–2025) for Kochi.
+   * Saves historical_weather.csv locally.
+   * Maps weather_code (0,1 ➔ Clear; 2,3 ➔ Cloudy; 51,53,55 ➔ Drizzle; 61,63,65 ➔ Rain).
+   * Trains the DecisionTreeClassifier and prints the classification accuracy report.
+   * Serializes the trained model into dt_weather_model.pkl.
+Step 5.2: Terminal 1 — Start the CoAP Server
+In the same terminal, launch the CoAP server:
+python coap_server.py
+
+ * Expected Terminal Output:
+   [CoAP Server] Server is running at coap://127.0.0.1:5683/weather
+
+ * Keep this terminal running.
+Step 5.3: Terminal 2 — Test the CoAP Client (Verification)
+Open a second terminal window and execute:
+python coap_client.py
+
+ * Expected Terminal Output:
+   [CoAP Client] Querying coap://127.0.0.1:5683/weather ...
+[CoAP Client] Received Response:
+{
+  "city": "Kochi",
+  "latitude": 9.93,
+  "longitude": 76.27,
+  "timestamp": "...",
+  "temperature": 29.4,
+  "humidity": 78,
+  "precipitation": 0.0,
+  "cloud_cover": 45,
+  "wind_speed": 11.2,
+  "surface_pressure": 1011.3
+}
+
+ * Terminal 1 will show: [CoAP Server] Received GET request ... Sending response: ....
+Step 5.4: Terminal 3 — Launch the Dashboard
+Open a third terminal window and run:
+streamlit run dashboard.py
+
+ * Expected Result: Streamlit opens http://localhost:8501 in your browser.
+ * Click "📡 Poll CoAP Server":
+   * Issues a CoAP GET request to coap://127.0.0.1:5683/weather.
+   * Displays the 6 weather cards (Temperature, Humidity, Precipitation, Cloud Cover, Wind Speed, Surface Pressure).
+   * Feeds parameters into the Decision Tree classifier.
+   * Displays the color-coded weather condition badge (Clear, Cloudy, Drizzle, or Rain) alongside class probability confidence.
+6. Rubric & Evaluation Mapping (30 Marks)
+| Requirement | Implementation Component | Verification Proof |
+|---|---|---|
+| 1. CoAP Server & Client [6 Marks] | coap_server.py & coap_client.py | Built using aiocoap, binding standard UDP port 5683 with /weather resource. |
+| 2. Retrieve Live Kochi Data via Server [6 Marks] | coap_server.py calling Open-Meteo Forecast API | Server queries latitude=9.93&longitude=76.27 for Kochi dynamically upon client GET. |
+| 3. Transfer Data via CoAP GET [5 Marks] | coap_client.py request handler | Handled via RFC 7252 CoAP GET returning 2.05 CONTENT with JSON payload. |
+| 4. Dashboard Displaying 6 Parameters [5 Marks] | dashboard.py metric layout | Renders 6 distinct metric cards: Temperature, Humidity, Precipitation, Cloud Cover, Wind Speed, Surface Pressure. |
+| 5. Decision Tree Training & Classification [5 Marks] | train_model.py with Open-Meteo Archive | Historical weather_code mapped to Clear, Cloudy, Drizzle, Rain; trained with DecisionTreeClassifier. |
+| 6. Display Predicted Weather Class [3 Marks] | dashboard.py classification box | Displays predicted class badge with icon, custom color, and class confidence table. |
